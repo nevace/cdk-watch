@@ -1,39 +1,55 @@
 /* eslint-disable no-new */
 import * as path from 'path';
-import * as cdk from '@aws-cdk/core';
-import * as dynamodb from '@aws-cdk/aws-dynamodb';
-import * as apigwv2 from '@aws-cdk/aws-apigatewayv2';
-import * as lambda from '@aws-cdk/aws-lambda';
-import * as logs from '@aws-cdk/aws-logs';
-import * as iam from '@aws-cdk/aws-iam';
-import {Stack} from '@aws-cdk/core';
+import {NestedStack, Stack, RemovalPolicy, Duration} from 'aws-cdk-lib';
+import {AttributeType, BillingMode, Table} from 'aws-cdk-lib/aws-dynamodb';
+import {
+  Effect,
+  ManagedPolicy,
+  PolicyStatement,
+  ServicePrincipal,
+  Role,
+} from 'aws-cdk-lib/aws-iam';
+import {
+  CfnApi,
+  CfnDeployment,
+  CfnIntegration,
+  CfnRoute,
+  CfnStage,
+} from 'aws-cdk-lib/aws-apigatewayv2';
+import {
+  Code,
+  Runtime,
+  Function as LambdaFunction,
+} from 'aws-cdk-lib/aws-lambda';
+import {RetentionDays} from 'aws-cdk-lib/aws-logs';
+import {Construct, DependencyGroup} from 'constructs';
 import {LogsLayerVersion} from './LogsLayerVersion';
 
-export class RealTimeLambdaLogsAPI extends cdk.NestedStack {
-  public readonly connectFn: lambda.Function;
+export class RealTimeLambdaLogsAPI extends NestedStack {
+  public readonly connectFn: LambdaFunction;
 
-  public readonly disconnectFn: lambda.Function;
+  public readonly disconnectFn: LambdaFunction;
 
-  public readonly defaultFn: lambda.Function;
+  public readonly defaultFn: LambdaFunction;
 
   /** role needed to send messages to websocket clients */
-  public readonly apigwRole: iam.Role;
+  public readonly apigwRole: Role;
 
   public readonly CDK_WATCH_CONNECTION_TABLE_NAME: string;
 
   public readonly CDK_WATCH_API_GATEWAY_MANAGEMENT_URL: string;
 
-  private connectionTable: dynamodb.Table;
+  private connectionTable: Table;
 
-  public executeApigwPolicy: iam.PolicyStatement;
+  public executeApigwPolicy: PolicyStatement;
 
   public logsLayerVersion: LogsLayerVersion;
 
-  public websocketApi: apigwv2.CfnApi;
+  public websocketApi: CfnApi;
 
-  public lambdaDynamoConnectionPolicy: iam.PolicyStatement;
+  public lambdaDynamoConnectionPolicy: PolicyStatement;
 
-  constructor(scope: cdk.Construct, id: string) {
+  constructor(scope: Construct, id: string) {
     super(scope, id);
 
     const stack = Stack.of(this);
@@ -44,19 +60,19 @@ export class RealTimeLambdaLogsAPI extends cdk.NestedStack {
     this.logsLayerVersion = new LogsLayerVersion(this, 'LogsLayerVersion');
 
     // table where websocket connections will be stored
-    const websocketTable = new dynamodb.Table(this, 'connections', {
+    const websocketTable = new Table(this, 'connections', {
       partitionKey: {
         name: 'connectionId',
-        type: dynamodb.AttributeType.STRING,
+        type: AttributeType.STRING,
       },
-      billingMode: dynamodb.BillingMode.PROVISIONED,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      billingMode: BillingMode.PROVISIONED,
+      removalPolicy: RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
       writeCapacity: 5,
       readCapacity: 5,
     });
 
-    this.websocketApi = new apigwv2.CfnApi(this, 'LogsWebsocketApi', {
+    this.websocketApi = new CfnApi(this, 'LogsWebsocketApi', {
       protocolType: 'WEBSOCKET',
       routeSelectionExpression: `$request.body.${routeSelectionKey}`,
       name: `${id}LogsWebsocketApi`,
@@ -64,37 +80,37 @@ export class RealTimeLambdaLogsAPI extends cdk.NestedStack {
 
     const basePermissions = websocketTable.tableArn;
     const indexPermissions = `${basePermissions}/index/*`;
-    this.lambdaDynamoConnectionPolicy = new iam.PolicyStatement({
+    this.lambdaDynamoConnectionPolicy = new PolicyStatement({
       actions: ['dynamodb:*'],
       resources: [basePermissions, indexPermissions],
     });
 
-    const connectLambdaRole = new iam.Role(this, 'connect-lambda-role', {
-      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+    const connectLambdaRole = new Role(this, 'connect-lambda-role', {
+      assumedBy: new ServicePrincipal('lambda.amazonaws.com'),
     });
     connectLambdaRole.addToPolicy(this.lambdaDynamoConnectionPolicy);
     connectLambdaRole.addManagedPolicy(
-      iam.ManagedPolicy.fromAwsManagedPolicyName(
+      ManagedPolicy.fromAwsManagedPolicyName(
         'service-role/AWSLambdaBasicExecutionRole',
       ),
     );
 
-    const disconnectLambdaRole = new iam.Role(this, 'disconnect-lambda-role', {
-      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+    const disconnectLambdaRole = new Role(this, 'disconnect-lambda-role', {
+      assumedBy: new ServicePrincipal('lambda.amazonaws.com'),
     });
     disconnectLambdaRole.addToPolicy(this.lambdaDynamoConnectionPolicy);
     disconnectLambdaRole.addManagedPolicy(
-      iam.ManagedPolicy.fromAwsManagedPolicyName(
+      ManagedPolicy.fromAwsManagedPolicyName(
         'service-role/AWSLambdaBasicExecutionRole',
       ),
     );
 
-    const messageLambdaRole = new iam.Role(this, 'message-lambda-role', {
-      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+    const messageLambdaRole = new Role(this, 'message-lambda-role', {
+      assumedBy: new ServicePrincipal('lambda.amazonaws.com'),
     });
     messageLambdaRole.addToPolicy(this.lambdaDynamoConnectionPolicy);
     messageLambdaRole.addManagedPolicy(
-      iam.ManagedPolicy.fromAwsManagedPolicyName(
+      ManagedPolicy.fromAwsManagedPolicyName(
         'service-role/AWSLambdaBasicExecutionRole',
       ),
     );
@@ -105,44 +121,44 @@ export class RealTimeLambdaLogsAPI extends cdk.NestedStack {
       this.websocketApi.ref,
     );
 
-    this.executeApigwPolicy = new iam.PolicyStatement({
+    this.executeApigwPolicy = new PolicyStatement({
       actions: ['execute-api:Invoke', 'execute-api:ManageConnections'],
       resources: [resourceStr],
-      effect: iam.Effect.ALLOW,
+      effect: Effect.ALLOW,
     });
 
     const lambdaProps = {
-      code: lambda.Code.fromAsset(websocketHandlerCodePath),
-      timeout: cdk.Duration.seconds(300),
-      runtime: lambda.Runtime.NODEJS_12_X,
-      logRetention: logs.RetentionDays.FIVE_DAYS,
+      code: Code.fromAsset(websocketHandlerCodePath),
+      timeout: Duration.seconds(300),
+      runtime: Runtime.NODEJS_18_X,
+      logRetention: RetentionDays.FIVE_DAYS,
       role: disconnectLambdaRole,
       environment: {
         CDK_WATCH_CONNECTION_TABLE_NAME: websocketTable.tableName,
       },
     };
 
-    const connectLambda = new lambda.Function(this, 'ConnectLambda', {
+    const connectLambda = new LambdaFunction(this, 'ConnectLambda', {
       handler: 'index.onConnect',
       description: 'Connect a user.',
       ...lambdaProps,
     });
 
-    const disconnectLambda = new lambda.Function(this, 'DisconnectLambda', {
+    const disconnectLambda = new LambdaFunction(this, 'DisconnectLambda', {
       handler: 'index.onDisconnect',
       description: 'Disconnect a user.',
       ...lambdaProps,
     });
 
-    const defaultLambda = new lambda.Function(this, 'DefaultLambda', {
+    const defaultLambda = new LambdaFunction(this, 'DefaultLambda', {
       handler: 'index.onMessage',
       description: 'Default',
       ...lambdaProps,
     });
 
     // access role for the socket api to access the socket lambda
-    const policy = new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
+    const policy = new PolicyStatement({
+      effect: Effect.ALLOW,
       resources: [
         connectLambda.functionArn,
         disconnectLambda.functionArn,
@@ -151,13 +167,13 @@ export class RealTimeLambdaLogsAPI extends cdk.NestedStack {
       actions: ['lambda:InvokeFunction'],
     });
 
-    const role = new iam.Role(this, `LogsWebsocketIamRole`, {
-      assumedBy: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+    const role = new Role(this, `LogsWebsocketIamRole`, {
+      assumedBy: new ServicePrincipal('apigateway.amazonaws.com'),
     });
     role.addToPolicy(policy);
 
     // websocket api lambda integration
-    const connectIntegration = new apigwv2.CfnIntegration(
+    const connectIntegration = new CfnIntegration(
       this,
       'connect-lambda-integration',
       {
@@ -171,7 +187,7 @@ export class RealTimeLambdaLogsAPI extends cdk.NestedStack {
       },
     );
 
-    const disconnectIntegration = new apigwv2.CfnIntegration(
+    const disconnectIntegration = new CfnIntegration(
       this,
       'disconnect-lambda-integration',
       {
@@ -185,7 +201,7 @@ export class RealTimeLambdaLogsAPI extends cdk.NestedStack {
       },
     );
 
-    const defaultIntegration = new apigwv2.CfnIntegration(
+    const defaultIntegration = new CfnIntegration(
       this,
       'default-lambda-integration',
       {
@@ -200,21 +216,21 @@ export class RealTimeLambdaLogsAPI extends cdk.NestedStack {
     );
 
     // Example route definition
-    const connectRoute = new apigwv2.CfnRoute(this, 'connect-route', {
+    const connectRoute = new CfnRoute(this, 'connect-route', {
       apiId: this.websocketApi.ref,
       routeKey: '$connect',
       authorizationType: 'AWS_IAM',
       target: `integrations/${connectIntegration.ref}`,
     });
 
-    const disconnectRoute = new apigwv2.CfnRoute(this, 'disconnect-route', {
+    const disconnectRoute = new CfnRoute(this, 'disconnect-route', {
       apiId: this.websocketApi.ref,
       routeKey: '$disconnect',
       authorizationType: 'NONE',
       target: `integrations/${disconnectIntegration.ref}`,
     });
 
-    const defaultRoute = new apigwv2.CfnRoute(this, 'default-route', {
+    const defaultRoute = new CfnRoute(this, 'default-route', {
       apiId: this.websocketApi.ref,
       routeKey: '$default',
       authorizationType: 'NONE',
@@ -229,14 +245,12 @@ export class RealTimeLambdaLogsAPI extends cdk.NestedStack {
     this.apigwRole = messageLambdaRole;
 
     // deployment
-    const apigwWssDeployment = new apigwv2.CfnDeployment(
-      this,
-      'apigw-deployment',
-      {apiId: this.websocketApi.ref},
-    );
+    const apigwWssDeployment = new CfnDeployment(this, 'apigw-deployment', {
+      apiId: this.websocketApi.ref,
+    });
 
     // stage
-    const apiStage = new apigwv2.CfnStage(this, 'apigw-stage', {
+    const apiStage = new CfnStage(this, 'apigw-stage', {
       apiId: this.websocketApi.ref,
       autoDeploy: true,
       deploymentId: apigwWssDeployment.ref,
@@ -248,10 +262,11 @@ export class RealTimeLambdaLogsAPI extends cdk.NestedStack {
     });
 
     // all routes are dependencies of the deployment
-    const routes = new cdk.ConcreteDependable();
-    routes.add(connectRoute);
-    routes.add(disconnectRoute);
-    routes.add(defaultRoute);
+    const routes = new DependencyGroup([
+      connectRoute,
+      disconnectRoute,
+      defaultRoute,
+    ]);
 
     // add the dependency
     apigwWssDeployment.node.addDependency(routes);
@@ -279,7 +294,7 @@ export class RealTimeLambdaLogsAPI extends cdk.NestedStack {
     ref: string,
   ): string => `arn:aws:execute-api:${region}:${accountId}:${ref}/*`;
 
-  public grantReadWrite = (lambdaFunction: lambda.Function): void => {
+  public grantReadWrite = (lambdaFunction: LambdaFunction): void => {
     this.connectionTable.grantReadWriteData(lambdaFunction);
   };
 }

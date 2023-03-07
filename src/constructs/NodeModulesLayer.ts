@@ -1,14 +1,12 @@
-import {Code, LayerVersion} from '@aws-cdk/aws-lambda';
-import {
-  extractDependencies,
-  findUp,
-  LockFile,
-} from '@aws-cdk/aws-lambda-nodejs/lib/util';
-import {Construct, RemovalPolicy} from '@aws-cdk/core';
 import execa from 'execa';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import objectHash from 'object-hash';
+import findUp from 'find-up';
+import {LockFile, extractDependencies} from 'aws-cdk-lib/aws-lambda-nodejs';
+import {Code, LayerVersion} from 'aws-cdk-lib/aws-lambda';
+import {Construct} from 'constructs';
+import {RemovalPolicy} from 'aws-cdk-lib';
 import {CDK_WATCH_OUTDIR} from '../consts';
 
 interface NodeModulesLayerProps {
@@ -27,7 +25,7 @@ enum Installer {
  * Copied from cdk source:
  * https://github.com/aws/aws-cdk/blob/ca42461acd4f42a8bd7c0fb05788c7ea50834de2/packages/@aws-cdk/aws-lambda-nodejs/lib/function.ts#L88-L103
  */
-const getDepsLock = (propsDepsLockFilePath?: string) => {
+export const getDepsLock = (propsDepsLockFilePath?: string) => {
   let depsLockFilePath: string;
   if (propsDepsLockFilePath) {
     if (!fs.existsSync(propsDepsLockFilePath)) {
@@ -38,7 +36,7 @@ const getDepsLock = (propsDepsLockFilePath?: string) => {
     }
     depsLockFilePath = path.resolve(propsDepsLockFilePath);
   } else {
-    const lockFile = findUp(LockFile.YARN) ?? findUp(LockFile.NPM);
+    const lockFile = findUp.sync(LockFile.YARN) ?? findUp.sync(LockFile.NPM);
     if (!lockFile) {
       throw new Error(
         'Cannot find a package lock file (`yarn.lock` or `package-lock.json`). Please specify it with `depsFileLockPath`.',

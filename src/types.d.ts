@@ -1,8 +1,13 @@
 import esbuild from 'esbuild';
 
+/* Build options to be passed to the watch function etc. */
+export interface CDKWBuildOptions {
+  preCompilation: boolean;
+}
 export interface LambdaManifestType {
   assetPath: string;
   esbuildOptions: esbuild.BuildOptions;
+  cdkwBuildOptions: CDKWBuildOptions;
   lambdaLogicalId: string;
   rootStackName: string;
   nestedStackLogicalIds: string[];

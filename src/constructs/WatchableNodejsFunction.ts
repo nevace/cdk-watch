@@ -1,19 +1,26 @@
 /* eslint-disable no-new */
 /* eslint-disable import/no-extraneous-dependencies */
+import * as path from 'path';
+import * as fs from 'fs-extra';
+import findUp from 'find-up';
+import {BuildOptions, Loader} from 'esbuild';
+import minimatch from 'minimatch';
+import {Construct} from 'constructs';
+import {
+  attachCustomSynthesis,
+  CfnElement,
+  CfnResource,
+  ISynthesisSession,
+  Stack,
+  Token,
+} from 'aws-cdk-lib';
 import {
   BundlingOptions,
   NodejsFunction,
   NodejsFunctionProps,
-} from '@aws-cdk/aws-lambda-nodejs';
-import {Runtime} from '@aws-cdk/aws-lambda';
-import {Asset} from '@aws-cdk/aws-s3-assets';
-import * as path from 'path';
-import * as fs from 'fs-extra';
-import findUp from 'find-up';
-import * as cdk from '@aws-cdk/core';
-import {BuildOptions, Loader} from 'esbuild';
-import {CfnElement} from '@aws-cdk/core';
-import minimatch from 'minimatch';
+} from 'aws-cdk-lib/aws-lambda-nodejs';
+import {Asset} from 'aws-cdk-lib/aws-s3-assets';
+import {Runtime} from 'aws-cdk-lib/aws-lambda';
 import {readManifest} from '../lib/readManifest';
 import {writeManifest} from '../lib/writeManifest';
 import {RealTimeLambdaLogsAPI} from './RealTimeLambdaLogsAPI';
@@ -22,6 +29,7 @@ import {
   CDK_WATCH_CONTEXT_NODE_MODULES_DISABLED,
 } from '../consts';
 import {NodeModulesLayer} from './NodeModulesLayer';
+import {CDKWBuildOptions} from '../types.d';
 
 type NodeModulesSelectOption =
   | {
@@ -89,12 +97,12 @@ class WatchableNodejsFunction extends NodejsFunction {
 
   public cdkWatchLogsApi?: RealTimeLambdaLogsAPI;
 
-  public readonly local?: cdk.ILocalBundling;
-
   private readonly nodeModulesLayerVersion: string | undefined;
 
+  private readonly cdkwBuildOptions: CDKWBuildOptions;
+
   constructor(
-    scope: cdk.Construct,
+    scope: Construct,
     id: string,
     props: WatchableNodejsFunctionProps,
   ) {
@@ -142,7 +150,7 @@ class WatchableNodejsFunction extends NodejsFunction {
 
     const {entry} = props;
     if (!entry) throw new Error('`entry` must be provided');
-    const targetMatch = (props.runtime || Runtime.NODEJS_12_X).name.match(
+    const targetMatch = (props.runtime || Runtime.NODEJS_18_X).name.match(
       /nodejs(\d+)/,
     );
     if (!targetMatch) {
@@ -169,8 +177,11 @@ class WatchableNodejsFunction extends NodejsFunction {
       tsconfig: bundling?.tsconfig
         ? path.resolve(entry, path.resolve(bundling?.tsconfig))
         : findUp.sync('tsconfig.json', {cwd: path.dirname(entry)}),
-      banner: bundling?.banner,
-      footer: bundling?.footer,
+      banner: bundling?.banner ? {js: bundling?.banner} : undefined,
+      footer: bundling?.footer ? {js: bundling?.footer} : undefined,
+    };
+    this.cdkwBuildOptions = {
+      preCompilation: !!bundling.preCompilation,
     };
 
     if (
@@ -201,6 +212,10 @@ class WatchableNodejsFunction extends NodejsFunction {
         this.cdkWatchLogsApi.CDK_WATCH_API_GATEWAY_MANAGEMENT_URL,
       );
     }
+
+    attachCustomSynthesis(this, {
+      onSynthesize: this.customSynthesis.bind(this),
+    });
   }
 
   /**
@@ -208,12 +223,12 @@ class WatchableNodejsFunction extends NodejsFunction {
    * is within a NestedStack etc etc).
    */
   private get parentStacks() {
-    const parents: cdk.Stack[] = [this.stack];
+    const parents: Stack[] = [this.stack];
     // Get all the nested stack parents into an array, the array will start with
     // the root stack all the way to the stack holding the lambda as the last
     // element in the array.
     while (parents[0].nestedStackParent) {
-      parents.unshift(parents[0].nestedStackParent as cdk.Stack);
+      parents.unshift(parents[0].nestedStackParent as Stack);
     }
     return parents;
   }
@@ -223,9 +238,7 @@ class WatchableNodejsFunction extends NodejsFunction {
    * the info it needs to run the lambdas in watch mode. This will include the
    * logical IDs and the stack name (and logical IDs of nested stacks).
    */
-  public synthesize(session: cdk.ISynthesisSession): void {
-    super.synthesize(session);
-
+  private customSynthesis(session: ISynthesisSession): void {
     const asset = this.node
       .findAll()
       .find((construct) => construct instanceof Asset) as Asset;
@@ -238,12 +251,13 @@ class WatchableNodejsFunction extends NodejsFunction {
 
     const assetPath = path.join(session.outdir, asset.assetPath);
     const [rootStack, ...nestedStacks] = this.parentStacks;
+
     const cdkWatchManifest = readManifest() || {
       region: this.stack.region,
       lambdas: {},
     };
 
-    if (cdk.Token.isUnresolved(this.stack.region)) {
+    if (Token.isUnresolved(this.stack.region)) {
       throw new Error(
         '`stack.region` is an unresolved token. `cdk-watch` requires a concrete region to be set.',
       );
@@ -267,14 +281,15 @@ class WatchableNodejsFunction extends NodejsFunction {
         ? this.stack.getLogicalId(this.cdkWatchLogsApi.websocketApi)
         : undefined,
       esbuildOptions: this.esbuildOptions,
+      cdkwBuildOptions: this.cdkwBuildOptions,
       lambdaLogicalId: this.stack.getLogicalId(
-        this.node.defaultChild as cdk.CfnResource,
+        this.node.defaultChild as CfnResource,
       ),
       rootStackName: rootStack.stackName,
       nestedStackLogicalIds: nestedStacks.map(
         (nestedStack) =>
           nestedStack.nestedStackParent?.getLogicalId(
-            nestedStack.nestedStackResource as cdk.CfnResource,
+            nestedStack.nestedStackResource as CfnResource,
           ) as string,
       ),
     };
