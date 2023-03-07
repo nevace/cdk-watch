@@ -36,7 +36,6 @@
     "cli-truncate": "^2.1.0",
     "commander": "^7.0.0",
     "dependency-tree": "^9.0.0",
-    "esbuild-plugin-tsc": "^0.3.1",
     "execa": "^5.0.0",
     "find-up": "^5.0.0",
     "fs-extra": "^9.1.0",
